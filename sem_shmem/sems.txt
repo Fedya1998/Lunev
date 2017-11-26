@@ -1,0 +1,7 @@
+sem(EMPTY)
+sem(MUTEX)
+sem(FULL)
+sem(READER_ALIVE)
+sem(WRITER_ALIVE)
+sem(ZBS)
+sem(ZBS2)
