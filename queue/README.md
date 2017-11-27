@@ -1,4 +1,3 @@
-A simple program to show the communication process between children using message queue
-
+Second Lunev's task. Children must print their numbers in the right order using message queue
 make
 ./queue <number of processes>
