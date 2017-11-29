@@ -18,35 +18,24 @@
 
 #include <my_debug.h>
 
-struct __pipe {
-    int child_will_read;
-    int child_will_write;
-};
-
 typedef struct pipe {
-    struct __pipe read;
-    struct __pipe write;
+    int fd0[2];
+    int fd1[2];
     long num;
 } Pipe;
-
-
-
-struct timeval timeout = {100, 0};
 
 static int MAXFD = 0;
 static const size_t CHILD_BUF_SIZE = (128 * 1024);
 static const size_t PAGE_SIZE = (512);
 static int fd_to_read_from = 0;
 static long n = 0;
-
+static const int LUNEV_BIG_NUMBER = 1 << 20;
+static const int SOMETHING_THAT_IF_POWER_3_BY_THIS_AND_MUL_BY_PAGESIZE_IS_GREATER_THAN_LUNEV_BIG_NUMBER;
 static int Child(Pipe);
 
 int ClosePipes(Pipe *pipes, long zbs, long n) ;
 
 #include "buf.h"
-#include "c_list.h"
-
-#define GetPipeNum(elem) (((SuperBuf *) ((elem)->data))->pipenum)
 
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -60,15 +49,14 @@ int main(int argc, char **argv) {
 
     Pipe *pipes = (Pipe *) calloc((size_t) n, sizeof(Pipe));
     for (long i = 0; i < n; i++) {
-        if (pipe((int *) &pipes[i].read)) {
+        if (pipe((int *) &pipes[i].fd0)) {
             perror("pipe");
             exit(EXIT_FAILURE);
         }
-        if (pipe((int *) &pipes[i].write)) {
+        if (pipe((int *) &pipes[i].fd1)) {
             perror("pipe");
             exit(EXIT_FAILURE);
         }
-        //printf("pipe %ld read->read %d, read->write %d, write->read %d, write->write %d\n", i, pipes[i].read.child_will_read, pipes[i].read.child_will_write, pipes[i].read.child_will_write, pipes[i].write.child_will_write);
         pipes[i].num = i;
     }
     //MAXFD = pipes[n - 1].write + 1;
@@ -90,52 +78,46 @@ int main(int argc, char **argv) {
     }
 
     for (long i = 0; i < n; i++) {
-        close(pipes[i].write.child_will_write);
-        close(pipes[i].read.child_will_read);
+        close(pipes[i].fd0[0]);
+        close(pipes[i].fd1[1]);
+        fcntl(pipes[i].fd0[1], F_SETFL, O_WRONLY | O_NONBLOCK);
+        fcntl(pipes[i].fd1[0], F_SETFL, O_RDONLY | O_NONBLOCK);
     }
-
+    close(pipes[0].fd0[1]);
+    close(pipes[n - 1].fd1[0]);
     SuperBuf **bufs = calloc((size_t) n - 1, sizeof(SuperBuf *));
-    ListElem *read_elem = NULL;
-    ListElem *write_elem = NULL;
-    for (int i = 0; i < n - 1; i++) {
+    for (long i = 0, hui = PAGE_SIZE; i < n - 1; i++, hui *= 3) {
         size_t size = 0;
-        if (i < 7)
-            size = (size_t) pow(3, i) * 512;
+        if (n - i < SOMETHING_THAT_IF_POWER_3_BY_THIS_AND_MUL_BY_PAGESIZE_IS_GREATER_THAN_LUNEV_BIG_NUMBER)
+            size = (size_t) hui * PAGE_SIZE;
         else
-            size = 1 << 20;
+            size = LUNEV_BIG_NUMBER;
         bufs[i] = GetBuf(size);
-        read_elem = AddAfter(read_elem, bufs[i]);
-        write_elem = AddAfter(write_elem, bufs[i]);
         (*bufs[i]).pipenum = i;
     }
-    List *read_list = read_elem->header;
-    List *write_list = write_elem->header;
-    sprintf(read_list->name, "read");
-    sprintf(write_list->name, "write");
-
-    //ListDump(read_list);
-    //ListDump(write_list);
     close(fd_to_read_from);
-
-    for (;!ListIsEmpty(write_list);) {
+    for (;;) {
         fd_set rd, wr;
         FD_ZERO(&rd);
         FD_ZERO(&wr);           //n read ends, n write ends
-        for (ListElem *elem = read_list->first; elem; elem = elem->next) {
-            if (!BufIsFull(elem->data)) {
-                FD_SET(pipes[GetPipeNum(elem)].write.child_will_read, &rd);
-                dfprintf(stderr, "\n--set read %d", pipes[GetPipeNum(elem)].write.child_will_read);
+        long ready = 0;
+        for (int j = 0; j < n - 1; j ++) {
+            if (pipes[j].fd1[0] != -1 && !BufIsFull(bufs[j])) {
+                FD_SET(pipes[j].fd1[0], &rd);
+                ready++;
+                dfprintf(stderr, "\n--set read %d", pipes[j].fd1[0]);
             }
         }
-
-        //printf("Write list count %ld\n", write_list->count);
-        for (ListElem *elem = write_list->first; elem; elem = elem->next) {
-            if (!BufIsEmpty(elem->data)) {
-                FD_SET(pipes[GetPipeNum(elem) + 1].read.child_will_write, &wr);
-                dfprintf(stderr, "\n--set write %d", pipes[GetPipeNum(elem) + 1].read.child_will_write);
+        for (int j = 0; j < n - 1; j ++) {
+            if (pipes[j + 1].fd0[1] != -1 && !BufIsEmpty(bufs[j])) {
+                FD_SET(pipes[j + 1].fd0[1], &wr);
+                ready++;
+                dfprintf(stderr, "\n--set write %d", pipes[j + 1].fd0[1]);
             }
         }
-        int nfds = select(MAXFD, &rd, &wr, NULL, &timeout);
+        if (!ready)
+            break;
+        int nfds = select(MAXFD, &rd, &wr, NULL, NULL);
         if (nfds == -1) {
             perror("select");
             exit(EXIT_FAILURE);
@@ -144,41 +126,44 @@ int main(int argc, char **argv) {
             fprintf(stderr, "No available fds\n");
             exit(EXIT_FAILURE);
         }
-        for (ListElem *elem = read_list->first; elem;) {
-            Gde;
-            ListElem *next = elem->next;
-            if (FD_ISSET(pipes[GetPipeNum(elem)].write.child_will_read, &rd)) {
-                ssize_t have_read = read(pipes[GetPipeNum(elem)].write.child_will_read, WriteToBuf(elem->data), PAGE_SIZE);
-                dfprintf(stderr, "\n--have read %ld from %d", have_read, pipes[GetPipeNum(elem)].write.child_will_read);
+        for (long i = 0; i < n - 1; i++) {
+            if (FD_ISSET(pipes[i].fd1[0], &rd)) {
+                size_t to_read = PAGE_SIZE;
+                ssize_t have_read = read(pipes[i].fd1[0], (bufs[i])->write_ptr, to_read);
+                bufs[i]->write_ptr += have_read;
+                dfprintf(stderr, "\n--have read %ld from %d", have_read, pipes[i].fd1[0]);
                 fflush(NULL);
                 if (have_read == -1) {
-                    dfprintf(stderr, "\n--error on fd %d", pipes[GetPipeNum(elem)].write.child_will_read);
                     perror("\nread");
                     exit(EXIT_FAILURE);
                 }
                 if (!have_read) {
-                    fprintf(stderr, "\nEbani nasos read\n");
-                    exit(EXIT_FAILURE);
+                    printf("\n\n\n\nPPPPPP\n\n\n\n");
                 }
-                if (have_read < PAGE_SIZE) {
-                    ((SuperBuf *) elem->data)->have_read = have_read;
-                    DeleteElem(elem);
+                if (have_read < to_read) {
+                    pipes[i].fd1[0] = -1;
+                    pipes[i].fd0[1] = -1;
+                    close(pipes[i].fd1[0]);
+                    close(pipes[i].fd0[1]);
                 }
             }
-            elem = next;
         }
 
-        for (ListElem *elem = write_list->first; elem;) {
-            ListElem *next = elem->next;
-            if (FD_ISSET(pipes[GetPipeNum(elem) + 1].read.child_will_write, &wr)) {
-                size_t to_write = PAGE_SIZE;
-                if (TheLastFromBuf(elem->data))
-                    to_write = (size_t) ((SuperBuf *) elem->data)->have_read;
-                ssize_t have_written = write(pipes[GetPipeNum(elem) + 1].read.child_will_write, ReadFromBuf(elem->data), to_write);
-                dfprintf(stderr, "\n--have written %ld to %d", have_written, pipes[GetPipeNum(elem) + 1].read.child_will_write);
+        for (long i = 0; i < n - 1; i++) {
+            if (FD_ISSET(pipes[i + 1].fd0[1], &wr)) {
+                size_t to_write = bufs[i]->write_ptr - bufs[i]->read_ptr;
+                if (to_write >= PAGE_SIZE)
+                    to_write = PAGE_SIZE;
+                ssize_t have_written = write(pipes[i + 1].fd0[1], bufs[i]->read_ptr, to_write);
+                bufs[i]->read_ptr += have_written;
+                if (bufs[i]->read_ptr == bufs[i]->write_ptr) {
+                    bufs[i]->read_ptr = bufs[i]->data;
+                    bufs[i]->write_ptr = bufs[i]->data;
+                }
+                dfprintf(stderr, "\n--have written %ld to %d", have_written, pipes[i + 1].fd0[1]);
                 fflush(NULL);
                 if (have_written == -1) {
-                    dfprintf(stderr, "\n--error on fd %d", pipes[GetPipeNum(elem)].read.child_will_write);
+                    dfprintf(stderr, "\n--error on fd %d", pipes[i + 1].fd0[1]);
                     perror("\nwrite");
                     exit(EXIT_FAILURE);
                 }
@@ -187,10 +172,7 @@ int main(int argc, char **argv) {
                     exit(EXIT_FAILURE);
                 }
 
-                if (have_written < PAGE_SIZE)
-                    DeleteElem(elem);
             }
-            elem = next;
         }
     }
     for (int i = 0; i < n - 1; i++) {
@@ -198,87 +180,59 @@ int main(int argc, char **argv) {
     }
     free(bufs);
     free(pipes);
-    ListDtor(write_list);
-    ListDtor(read_list);
     return EXIT_SUCCESS;
 }
 
 int ClosePipes(Pipe *pipes, long zbs, long n) {
     for (long i = 0; i < n; i++) {
         if (i != zbs) {
-            close(pipes[i].write.child_will_write);
-            close(pipes[i].read.child_will_read);
+            close(pipes[i].fd1[1]);
+            close(pipes[i].fd0[0]);
         }
-        close(pipes[i].write.child_will_read);
-        close(pipes[i].read.child_will_write);
+        close(pipes[i].fd0[1]);
+        close(pipes[i].fd1[0]);
     }
 }
 
 static int Child(Pipe pipe) {
     if (pipe.num == n - 1) {
-        close(pipe.write.child_will_write);
-        pipe.write.child_will_write = STDOUT_FILENO;
+        close(pipe.fd1[1]);
+        pipe.fd1[1] = STDOUT_FILENO;
     }
     if (pipe.num == 0) {
-        close(pipe.read.child_will_read);
-        pipe.read.child_will_read = fd_to_read_from;
+        close(pipe.fd0[0]);
+        pipe.fd0[0] = fd_to_read_from;
     }
 
-    dfprintf(stderr, "\n\tI'm %ld read %d write %d", pipe.num, pipe.read.child_will_read, pipe.write.child_will_write);
     SuperBuf *buf = GetBuf(CHILD_BUF_SIZE);
-    int stop = 0;
-    for (;;) {
-        fd_set rd, wr;
-        FD_ZERO(&rd);
-        FD_ZERO(&wr);
-        if (!stop && !BufIsFull(buf)) {                          //We can write to the buf so we need to read from fd
-            FD_SET(pipe.read.child_will_read, &rd);
-        }
-        if (!BufIsEmpty(buf)) {                                  //Vise versa
-            FD_SET(pipe.write.child_will_write, &wr);
-        }
-        int nfds = select(MAXFD, &rd, &wr, NULL, &timeout);
-        if (nfds == -1) {
-            perror("select");
+
+    for(;;) {
+        ssize_t have_read = read(pipe.fd0[0], buf->data, CHILD_BUF_SIZE);
+        if (have_read == -1) {
+            dfprintf(stderr, "\nerror on fd %d", pipe.fd0[0]);
+            perror("\nread");
             exit(EXIT_FAILURE);
         }
-        if (!nfds) {
-            fprintf(stderr, "No available fds\n");
+        if (!have_read) {
+            break;
+        }
+        ssize_t have_written = write(pipe.fd1[1], buf->data, have_read);
+        if (have_written == -1) {
+            perror("\nwrite");
             exit(EXIT_FAILURE);
         }
 
-        if (!stop && FD_ISSET(pipe.read.child_will_read, &rd)) {
-            ssize_t have_read = read(pipe.read.child_will_read, WriteToBuf(buf), PAGE_SIZE);
-            dfprintf(stderr, "\nhave read %ld from %d i'm %ld", have_read, pipe.read.child_will_read, pipe.num);
-            if (have_read == -1) {
-                dfprintf(stderr, "\nerror on fd %d", pipe.read.child_will_read);
-                perror("\nread");
-                exit(EXIT_FAILURE);
-            }
-            if (!have_read) {
-                fprintf(stderr, "\nPIZDA\n");
-                exit(EXIT_FAILURE);
-            }
-            if (have_read < PAGE_SIZE) {
-                buf->have_read = have_read;
-                stop = 1;
-            }
+        if (have_written != have_read) {
+            fprintf(stderr, "ZHOPA\n");
+            exit(EXIT_FAILURE);
         }
-        if (FD_ISSET(pipe.write.child_will_write, &wr)) {
-            size_t to_write = PAGE_SIZE;
-            if (TheLastFromBuf(buf))
-                to_write = (size_t) (buf)->have_read;
-            ssize_t have_written = write(pipe.write.child_will_write, ReadFromBuf(buf), to_write);
-            dfprintf(stderr, "\nhave written %ld to %d i'm %ld", have_written, pipe.write.child_will_write, pipe.num);
-            if (have_written == -1) {
-                fprintf(stderr, "\nerror on fd %d nwrite = %ld num = %ld", pipe.read.child_will_read, to_write, pipe.num);
-                perror("\nwrite");
-                exit(EXIT_FAILURE);
-            }
-            if (have_written < PAGE_SIZE)
-                break;
-        }
+
+        if (pipe.num == 2)
+            sleep(10);
     }
+
+    dfprintf(stderr, "\n\tI'm %ld read %d write %d", pipe.num, pipe.fd0[0], pipe.fd1[1]);
+
     free(buf->data);
     free(buf);
     return EXIT_SUCCESS;
