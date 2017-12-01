@@ -20,11 +20,11 @@
 
 static int Write(char * source_file);
 static int Read();
-static void On_Sigchld(int sig);
-static int Send_Sig(pid_t dest, int sig);
-static void On_USR(int sig);
+static void OnSigchld(int sig);
+static int SendSig(pid_t dest, int sig);
+static void OnUSR(int sig);
 static void Alarm(int signal);
-static void File_End(int sig);
+static void FileEnd(int sig);
 
 static pid_t parent;
 static pid_t child;
@@ -37,7 +37,7 @@ static int LINE = 0;
 #define Wait()                        \
     alarm(1);                          \
     LINE = __LINE__;                    \
-    sigsuspend(&set);                    \
+    sigsuspend(&set);    /*crit*/        \
     alarm(0);
 
 int main(int argc, char ** argv) {
@@ -47,9 +47,9 @@ int main(int argc, char ** argv) {
         return EXIT_FAILURE;
     }
 
-    struct sigaction act = {.sa_handler = On_Sigchld};
+    struct sigaction act = {.sa_handler = OnSigchld};
     sigaction(SIGCHLD, &act, NULL);
-    act.sa_handler = On_USR;
+    act.sa_handler = OnUSR;
     sigaction(SIGUSR1, &act, NULL);
     sigaction(SIGUSR2, &act, NULL);
     act.sa_handler = Alarm;
@@ -62,11 +62,10 @@ int main(int argc, char ** argv) {
     sigdelset(&set, SIGUSR1);
     sigdelset(&set, SIGUSR2);
     sigdelset(&set, SIGSYS);
-    act.sa_handler = File_End;
+    act.sa_handler = FileEnd;
     sigaction(SIGSYS, &act, NULL);
     parent = getpid();
     pid_t pid = fork();
-    /**/
     if (pid < 0){
         perror("fork");
         exit(EXIT_FAILURE);
@@ -94,17 +93,17 @@ static int Write(char * source_file) {
         //printf("byte to send %d\n", byte);
         if (have_read == 0) {
             Wait();
-            Send_Sig(parent, SIGSYS);
+            SendSig(parent, SIGSYS);              //-----
             Wait();
-            break;
+            break; //crit
         }
         else {
             for (int i = 0; i < 8; i++) {
                 Wait();
-                if ((byte | (1 << i)) == byte)      //
-                    Send_Sig(parent, SIGUSR1);
+                if ((byte | (1 << i)) == byte)
+                    SendSig(parent, SIGUSR1);      //crit
                 else
-                    Send_Sig(parent, SIGUSR2);
+                    SendSig(parent, SIGUSR2);      //crit
             }
         }
         if (have_read == -1){
@@ -121,9 +120,9 @@ static int Read(){
     while (1){
         char byte = 0;
         for (int i = 0; i < 8; i++){
-            Send_Sig(child, SIGUSR1);           //
+            SendSig(child, SIGUSR1);    //crit
             sigsuspend(&set);
-            if (bit)
+            if (bit)                    //crit
                 byte |= 1 << i;
         }
         write(1, &byte, 1);
@@ -138,7 +137,7 @@ static void Alarm(int signal){
     exit(EXIT_FAILURE);
 }
 
-static void On_USR(int sig){
+static void OnUSR(int sig){
     switch (sig){
         case SIGUSR1:
             bit = 1;
@@ -151,7 +150,7 @@ static void On_USR(int sig){
     }
 }
 
-static int Send_Sig(pid_t dest, int sig){
+static int SendSig(pid_t dest, int sig){
     p(10, ("%s sending sig %d\n", FUNC, sig));
     int res = kill(dest, sig);
     if (res == -1){
@@ -165,12 +164,12 @@ static int Send_Sig(pid_t dest, int sig){
     return res;
 }
 
-static void On_Sigchld(int sig){
+static void OnSigchld(int sig){
     //printf("Writer is dead, I'm dying too\n");
     exit(EXIT_FAILURE);
 }
 
-static void File_End(int sig){
-    //Send_Sig(parent, SIGUSR1);
+static void FileEnd(int sig){
+    //SendSig(parent, SIGUSR1);
     exit(EXIT_SUCCESS);
 }
