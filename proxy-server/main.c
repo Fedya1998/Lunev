@@ -30,7 +30,7 @@ static const size_t PAGE_SIZE = (512);
 static int fd_to_read_from = 0;
 static long n = 0;
 static const int LUNEV_BIG_NUMBER = 1 << 20;
-static const int SOMETHING_THAT_IF_POWER_3_BY_THIS_AND_MUL_BY_PAGESIZE_IS_GREATER_THAN_LUNEV_BIG_NUMBER;
+static const int SOMETHING_THAT_IF_3_IS_NASTILY_POWERED_BY_THIS_AND_THEN_SNIDELY_MULLED_BY_PAGESIZE_IS_GREATER_THAN_LUNEV_BIG_NUMBER = 7;
 static int Child(Pipe);
 
 int ClosePipes(Pipe *pipes, long zbs, long n) ;
@@ -86,14 +86,14 @@ int main(int argc, char **argv) {
     close(pipes[0].fd0[1]);
     close(pipes[n - 1].fd1[0]);
     SuperBuf **bufs = calloc((size_t) n - 1, sizeof(SuperBuf *));
-    for (long i = 0, hui = PAGE_SIZE; i < n - 1; i++, hui *= 3) {
+    for (long i = n - 2, count = 1; i >= 0; i--, count *= 3) {
         size_t size = 0;
-        if (n - i < SOMETHING_THAT_IF_POWER_3_BY_THIS_AND_MUL_BY_PAGESIZE_IS_GREATER_THAN_LUNEV_BIG_NUMBER)
-            size = (size_t) hui * PAGE_SIZE;
+        if (n - i - 2 < SOMETHING_THAT_IF_3_IS_NASTILY_POWERED_BY_THIS_AND_THEN_SNIDELY_MULLED_BY_PAGESIZE_IS_GREATER_THAN_LUNEV_BIG_NUMBER)
+            size = (size_t) count * PAGE_SIZE;
         else
             size = LUNEV_BIG_NUMBER;
         bufs[i] = GetBuf(size);
-        (*bufs[i]).pipenum = i;
+        bufs[i]->pipenum = n - 2 - i;
     }
     close(fd_to_read_from);
     for (;;) {
@@ -137,14 +137,11 @@ int main(int argc, char **argv) {
                     perror("\nread");
                     exit(EXIT_FAILURE);
                 }
-                if (!have_read) {
-                    printf("\n\n\n\nPPPPPP\n\n\n\n");
-                }
-                if (have_read < to_read) {
-                    pipes[i].fd1[0] = -1;
-                    pipes[i].fd0[1] = -1;
+                if (!have_read || have_read < to_read) {
                     close(pipes[i].fd1[0]);
                     close(pipes[i].fd0[1]);
+                    pipes[i].fd1[0] = -1;
+                    pipes[i].fd0[1] = -1;
                 }
             }
         }
@@ -168,7 +165,7 @@ int main(int argc, char **argv) {
                     exit(EXIT_FAILURE);
                 }
                 if (!have_written) {
-                    dfprintf(stderr, "\nEbani nasos write\n");
+                    dfprintf(stderr, "\n((( write\n");
                     exit(EXIT_FAILURE);
                 }
 
@@ -226,12 +223,7 @@ static int Child(Pipe pipe) {
             fprintf(stderr, "ZHOPA\n");
             exit(EXIT_FAILURE);
         }
-
-        if (pipe.num == 2)
-            sleep(10);
     }
-
-    dfprintf(stderr, "\n\tI'm %ld read %d write %d", pipe.num, pipe.fd0[0], pipe.fd1[1]);
 
     free(buf->data);
     free(buf);

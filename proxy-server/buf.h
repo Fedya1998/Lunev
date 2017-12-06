@@ -9,7 +9,7 @@ typedef struct buf {
     char *data;
     char *read_ptr;
     char *write_ptr;
-    int pipenum;
+    long pipenum;
     size_t max_size;
     size_t count;
     ssize_t have_read;
@@ -37,7 +37,7 @@ SuperBuf *GetBuf(size_t size) {
         perror("calloc");
         exit(EXIT_FAILURE);
     }
-    buf->max_size = size / PAGE_SIZE;
+    buf->max_size = size;
     buf->data = (char *) calloc(size, sizeof(*buf->data));
     if (!buf->data) {
         perror("calloc");
@@ -50,15 +50,19 @@ SuperBuf *GetBuf(size_t size) {
 }
 
 int BufIsFull(SuperBuf *buf) {
-    return buf->write_ptr == buf->max_size * PAGE_SIZE + buf->data;
+    return buf->max_size + buf->data - buf->write_ptr < PAGE_SIZE;
 }
 
 int TheLastFromBuf(SuperBuf *buf) {
     return buf->count == 1;
 }
 
+size_t GetEmptySize(SuperBuf *buf) {
+    return buf->max_size + buf->data - buf->write_ptr;
+}
+
 int BufIsEmpty(SuperBuf *buf) {
-    return !buf->count;
+    return buf->write_ptr == buf->data;
 }
 
 char *WriteToBuf(SuperBuf *buf) {
@@ -67,7 +71,7 @@ char *WriteToBuf(SuperBuf *buf) {
         exit(EXIT_FAILURE);
     }
     char *val = buf->write_ptr;
-    buf->write_ptr += PAGE_SIZE;
+    //buf->write_ptr += PAGE_SIZE;
     buf->count++;
     return val;
 }
@@ -78,7 +82,7 @@ char *ReadFromBuf(SuperBuf *buf) {
         exit(EXIT_FAILURE);
     }
     char *val = buf->read_ptr;
-    buf->read_ptr += PAGE_SIZE;
+    //buf->read_ptr += PAGE_SIZE;
     buf->count--;
     if (!buf->count) {
         buf->write_ptr = buf->data;
@@ -90,7 +94,7 @@ char *ReadFromBuf(SuperBuf *buf) {
 void BufDump(SuperBuf *buf, char *destination) {
     sprintf(destination, "data %p\n", buf->data);
     strncpy(destination + strlen(destination), buf->data, 20);
-    sprintf(destination + strlen(destination), "\nread ptr %ld, write ptr %ld\npipenum %d, max size %ld\n",
+    sprintf(destination + strlen(destination), "\nread ptr %ld, write ptr %ld\npipenum %ld, max size %ld\n",
             ((long unsigned) buf->read_ptr - (long unsigned) buf->data) / PAGE_SIZE,
             ((long unsigned) buf->write_ptr - (long unsigned) buf->data) / PAGE_SIZE, buf->pipenum, buf->max_size);
 }
